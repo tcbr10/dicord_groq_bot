@@ -102,6 +102,9 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    if message.author.bot:
+        return
+
     
     prompt = message.content.strip()
     if not prompt:
