@@ -2,7 +2,8 @@ import discord
 from groq import Groq
 import os
 import json
-from duckduckgo_search import DDGS
+import urllib.request
+from html.parser import HTMLParser
 
 # --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -17,23 +18,64 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# --- 1. Define the actual Python function for searching ---
+# --- 1. Define the Native Python function for searching ---
+class DDGParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self.in_snippet = False
+        self.current_snippet = ""
+        self.result_count = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a" and self.result_count < 3:
+            for attr, value in attrs:
+                if attr == "class" and "result-snippet" in value:
+                    self.in_snippet = True
+
+    def handle_data(self, data):
+        if self.in_snippet:
+            self.current_snippet += data.strip() + " "
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.in_snippet:
+            self.in_snippet = False
+            self.results.append(self.current_snippet.strip())
+            self.current_snippet = ""
+            self.result_count += 1
+
 def search_duckduckgo(query: str) -> str:
-    """Searches the web using DuckDuckGo and returns the results."""
+    """Searches the web using native Python to avoid Docker dependency crashes."""
     try:
-        results = DDGS().text(query, max_results=3)
-        if not results:
-            return "No results found."
+        # Format the query for the URL
+        url_query = urllib.parse.quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={url_query}"
         
-        # Format the results into a string for the AI to read
-        formatted_results = ""
-        for r in results:
-            formatted_results += f"Title: {r['title']}\nSummary: {r['body']}\nURL: {r['href']}\n\n"
-        return formatted_results
+        # We must use a User-Agent so DuckDuckGo doesn't block the request
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        
+        with urllib.request.urlopen(req) as response:
+            html = response.read().decode('utf-8')
+            
+        parser = DDGParser()
+        parser.feed(html)
+        
+        if not parser.results:
+            return "No results found."
+            
+        # Format results for the AI
+        formatted = "Search Results:\n"
+        for idx, res in enumerate(parser.results):
+            formatted += f"{idx+1}. {res}\n"
+            
+        return formatted
     except Exception as e:
         return f"Error performing search: {e}"
 
-# --- 2. Tell Groq what tools are available ---
+# --- 2. Tell Groq about the tool ---
 tools = [
     {
         "type": "function",
@@ -45,7 +87,7 @@ tools = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query to look up on the internet.",
+                        "description": "The search query to look up.",
                     }
                 },
                 "required": ["query"],
@@ -60,41 +102,33 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-
+    
     prompt = message.content.strip()
     if not prompt:
         return
 
     async with message.channel.typing():
         try:
-            # Step 1: Send the user's prompt to Groq, providing the search tool
             messages = [{"role": "user", "content": prompt}]
             
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 tools=tools,
-                tool_choice="auto", # Lets the AI decide if it needs to search
+                tool_choice="auto",
             )
             
             response_message = response.choices[0].message
             
-            # Step 2: Check if Groq decided to use the search tool
             if response_message.tool_calls:
-                # Add the AI's tool request to the message history
                 messages.append(response_message)
-                
-                # Execute the search for each tool call
                 for tool_call in response_message.tool_calls:
                     if tool_call.function.name == "search_duckduckgo":
-                        # Get the search query the AI generated
                         function_args = json.loads(tool_call.function.arguments)
                         search_query = function_args.get("query")
                         
-                        # Run our python search function
                         search_results = search_duckduckgo(search_query)
                         
-                        # Step 3: Send the search results back to Groq
                         messages.append({
                             "tool_call_id": tool_call.id,
                             "role": "tool",
@@ -102,17 +136,14 @@ async def on_message(message):
                             "content": search_results,
                         })
                 
-                # Step 4: Ask Groq to generate a final answer using the search results
                 final_response = groq_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages
                 )
                 final_text = final_response.choices[0].message.content
             else:
-                # If no tool was needed (like for "Hello!"), just use the standard response
                 final_text = response_message.content
             
-            # Send the final response to Discord
             for i in range(0, len(final_text), 2000):
                 await message.reply(final_text[i:i+2000], mention_author=False)
 
