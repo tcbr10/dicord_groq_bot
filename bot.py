@@ -1,11 +1,14 @@
 import discord
 from groq import Groq
+import os
 
-# --- CONFIGURATION ---
-DISCORD_TOKEN = "YOUR_DISCORD_BOT_TOKEN_HERE"
-GROQ_API_KEY = "YOUR_GROQ_API_KEY_HERE"
-YOUR_USER_ID = 123456789012345678  # Replace with your actual Discord User ID
-MODEL_NAME = "llama-3.3-70b-versatile" # Choose your preferred Groq model
+# --- CONFIGURATION (Pulls from Portainer ENV Variables) ---
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# You can either hardcode this or pass it as an ENV variable too
+YOUR_USER_ID = 123456789012345678  
+MODEL_NAME = "llama-3.3-70b-versatile"
 # ---------------------
 
 # Initialize Groq Client
