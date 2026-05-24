@@ -2,12 +2,9 @@ import discord
 from groq import Groq
 import os
 
-# --- CONFIGURATION (Pulls from Portainer ENV Variables) ---
+# --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-# You can either hardcode this or pass it as an ENV variable too
-YOUR_USER_ID = 123456789012345678  
 MODEL_NAME = "llama-3.3-70b-versatile"
 # ---------------------
 
@@ -29,34 +26,32 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # Only respond if the bot is mentioned
-    if client.user.mentioned_in(message):
-        
-        # Remove the bot's mention from the prompt text
-        prompt = message.content.replace(f'<@{client.user.id}>', '').strip()
-        
-        if not prompt:
-            await message.channel.send("What's up?")
-            return
+    # Grab the text you typed
+    prompt = message.content.strip()
+    
+    # Don't respond to empty messages (like if you just send an image)
+    if not prompt:
+        return
 
-        # Show a "typing" indicator in Discord while waiting for Groq
-        async with message.channel.typing():
-            try:
-                # Call Groq API
-                chat_completion = groq_client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=MODEL_NAME,
-                )
-                
-                # Send the response back to Discord
-                response_text = chat_completion.choices[0].message.content
-                
-                # Discord messages have a 2000 char limit, so we chunk it if necessary
-                for i in range(0, len(response_text), 2000):
-                    await message.channel.send(response_text[i:i+2000])
+    # Show a "typing..." indicator in Discord while waiting for Groq
+    async with message.channel.typing():
+        try:
+            # Call Groq API
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=MODEL_NAME,
+            )
+            
+            # Send the response back to Discord using the reply function
+            # mention_author=False means it won't ping you every time it replies
+            response_text = chat_completion.choices[0].message.content
+            
+            # Discord messages have a 2000 char limit, chunk if necessary
+            for i in range(0, len(response_text), 2000):
+                await message.reply(response_text[i:i+2000], mention_author=False)
 
-            except Exception as e:
-                await message.channel.send(f"An error occurred: {e}")
+        except Exception as e:
+            await message.channel.send(f"An error occurred: {e}")
 
 # Start the bot
 client.run(DISCORD_TOKEN)
