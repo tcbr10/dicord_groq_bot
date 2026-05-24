@@ -26,10 +26,6 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # Security check: ONLY respond if the sender is you
-    if message.author.id != YOUR_USER_ID:
-        return
-
     # Only respond if the bot is mentioned
     if client.user.mentioned_in(message):
         
