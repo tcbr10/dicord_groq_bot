@@ -5,6 +5,8 @@ import json
 import urllib.request
 import urllib.parse
 import re
+import requests
+from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -45,6 +47,32 @@ def search_web(query: str) -> str:
         return formatted_results
     except Exception as e:
         return f"Error connecting to SearXNG: {e}"
+    
+# --- Define the Webpage Reader Function ---
+def read_webpage(url: str) -> str:
+    """Fetches a webpage and extracts the readable text."""
+    try:
+        # Use a standard User-Agent so websites don't block the request
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse the HTML and extract text
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove javascript and stylesheet code
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.extract()
+            
+        text = soup.get_text(separator=' ', strip=True)
+        
+        # Truncate the text to 15,000 characters so we don't exceed Groq's token limits
+        if len(text) > 15000:
+            text = text[:15000] + "... [Content Truncated]"
+            
+        return text
+    except Exception as e:
+        return f"Error reading webpage: {e}"
 
 # --- 2. Tell Groq about the Tool ---
 tools = [
@@ -62,6 +90,23 @@ tools = [
                     }
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_webpage",
+            "description": "Opens a specific URL and reads its full text content. Use this when the search snippet does not contain enough information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The full URL of the webpage to read.",
+                    }
+                },
+                "required": ["url"],
             },
         },
     }
@@ -140,17 +185,27 @@ async def on_message(message):
             # If it used the standard tool_calls array instead (just in case Groq fixes it)
             elif response.choices[0].message.tool_calls:
                 messages.append(response.choices[0].message)
-                for tool_call in response.choices[0].message.tool_calls:
-                    if tool_call.function.name == "search_web":
-                        function_args = json.loads(tool_call.function.arguments)
+                for tool_call in response_message.tool_calls:
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    # Decide which tool to run
+                    if function_name == "search_web":
                         search_query = function_args.get("query")
-                        search_results = search_web(search_query)
-                        messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": "search_web",
-                            "content": search_results,
-                        })
+                        tool_results = search_web(search_query)
+                    elif function_name == "read_webpage":
+                        url_to_read = function_args.get("url")
+                        tool_results = read_webpage(url_to_read)
+                    else:
+                        tool_results = "Error: Unknown function."
+                        
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": tool_results,
+                    })
+
                 final_response = groq_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages
