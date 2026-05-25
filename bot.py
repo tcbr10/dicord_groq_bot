@@ -9,7 +9,7 @@ import urllib.parse
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YOUR_USER_ID = 123456789012345678
-MODEL_NAME = "llama3-groq-70b-8192-tool-use-preview"
+MODEL_NAME = "llama-3.3-70b-versatile"
 # Change this IP to your server's local IP address if not running on the exact same network bridge
 SEARXNG_URL = "http://127.0.0.1:8888" 
 # ---------------------
@@ -81,14 +81,26 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            messages = [{"role": "user", "content": prompt}]
+            messages = [
+                {
+                    "role": "system", 
+                    "content": "You are a helpful assistant. Use the tools provided when necessary. NEVER use XML or HTML tags like <function> or <tool_call> in your responses."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ]
+
             
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
+                parallel_tool_calls=False # <-- THIS IS THE CRITICAL FIX
             )
+
             
             response_message = response.choices[0].message
             
