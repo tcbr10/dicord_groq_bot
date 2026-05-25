@@ -73,7 +73,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author.bot or message.author.id != YOUR_USER_ID:
+    if message.author.bot:
         return
 
     prompt = message.content.strip()
