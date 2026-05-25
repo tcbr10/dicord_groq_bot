@@ -9,7 +9,7 @@ import urllib.parse
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YOUR_USER_ID = 123456789012345678
-MODEL_NAME = "llama-3.3-70b-versatile"
+MODEL_NAME = "llama3-groq-70b-8192-tool-use-preview"
 # Change this IP to your server's local IP address if not running on the exact same network bridge
 SEARXNG_URL = "http://127.0.0.1:8888" 
 # ---------------------
@@ -81,17 +81,7 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            messages = [
-                {
-                    "role": "system", 
-                    "content": "You are a helpful Discord bot. If you need to use a tool, use it directly. Do not explain that you are using a tool, and do not use XML or HTML tags like <function>."
-                },
-                {
-                    "role": "user", 
-                    "content": prompt
-                }
-            ]
-
+            messages = [{"role": "user", "content": prompt}]
             
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
