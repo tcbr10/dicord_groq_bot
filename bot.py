@@ -6,20 +6,15 @@ import urllib.request
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
-import re
 
 # --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-YOUR_USER_ID = 123456789012345678  # Replace with your actual Discord User ID
+YOUR_USER_ID = 123456789012345678  
 MODEL_NAME = "llama-3.3-70b-versatile"
-
-# Ensure this points to your SearXNG container! 
-# (e.g., http://searxng:8080 if they are on the same Docker network)
 SEARXNG_URL = "http://100.113.140.50:8888" 
 # ---------------------
 
-# Initialize Clients
 groq_client = Groq(api_key=GROQ_API_KEY)
 intents = discord.Intents.default()
 intents.message_content = True
@@ -27,7 +22,6 @@ client = discord.Client(intents=intents)
 
 # --- Tool 1: Web Search ---
 def search_web(query: str) -> str:
-    """Searches the live internet using your self-hosted SearXNG instance."""
     try:
         url = f"{SEARXNG_URL}/search?q={urllib.parse.quote(query)}&format=json"
         req = urllib.request.Request(url, headers={'User-Agent': 'GroqDiscordBot/1.0'})
@@ -51,65 +45,42 @@ def search_web(query: str) -> str:
 
 # --- Tool 2: Web Scraper ---
 def read_webpage(url: str) -> str:
-    """Fetches a webpage and extracts the readable text."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Strip out useless backend code
         for script in soup(["script", "style", "nav", "footer", "header"]):
             script.extract()
             
         text = soup.get_text(separator=' ', strip=True)
-        
-        # Prevent the AI from crashing due to token limits on massive sites
         if len(text) > 15000:
             text = text[:15000] + "... [Content Truncated]"
-            
         return text
     except Exception as e:
         return f"Error reading webpage: {e}"
 
-# --- Tool Definitions for Groq ---
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_web",
-            "description": "Searches the live internet for up-to-date news, facts, and general information.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query to look up on the web.",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_webpage",
-            "description": "Opens a specific URL and reads its full text content. Use this to read the full article from a search result link.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The full URL of the webpage to read.",
-                    }
-                },
-                "required": ["url"],
-            },
-        },
-    }
-]
+# --- The Router Function ---
+def analyze_intent(prompt: str):
+    """Uses a fast LLM call strictly forced to output JSON to decide if a tool is needed."""
+    router_prompt = f"""
+    You are an intent analyzer. Read the user's prompt and decide if they need to search the web, read a specific URL, or just chat.
+    Output ONLY a valid JSON object in this exact format, with no markdown, no xml, and no conversational text:
+    {{"action": "chat"}} OR {{"action": "search_web", "query": "search term"}} OR {{"action": "read_webpage", "url": "http://..."}}
+    
+    User Prompt: {prompt}
+    """
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant", # Use the smaller, faster model just for routing
+            messages=[{"role": "user", "content": router_prompt}],
+            response_format={"type": "json_object"}, # This forces perfect JSON output
+            temperature=0
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        return {"action": "chat"} # Fallback to normal chat if the router fails
 
 @client.event
 async def on_ready():
@@ -117,7 +88,6 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # Ignore other bots and anyone who isn't you
     if message.author.bot:
         return
 
@@ -127,115 +97,40 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
+            # 1. Route the Intent manually
+            intent = analyze_intent(prompt)
+            tool_context = ""
+            
+            # 2. Execute the tool in Python based on the router's JSON
+            if intent.get("action") == "search_web":
+                tool_context = search_web(intent.get("query"))
+            elif intent.get("action") == "read_webpage":
+                tool_context = read_webpage(intent.get("url"))
+                
+            # 3. Build the final prompt for Llama 3.3
+            system_instruction = "You are a helpful assistant."
+            if tool_context:
+                system_instruction += f"\n\nUse the following contextual data to answer the user's request:\n{tool_context}"
+                
             messages = [
-                {
-                    "role": "system", 
-                    "content": "You are a helpful assistant with internet access. If you need details, use the search_web tool. If you need to read a full article, use the read_webpage tool."
-                },
-                {
-                    "role": "user", 
-                    "content": prompt
-                }
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt}
             ]
             
-            # Step 1: Ask Groq
-            response = groq_client.chat.completions.create(
+            # 4. Generate the final answer WITHOUT passing the `tools` array
+            final_response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                parallel_tool_calls=False
+                temperature=0.7
             )
             
-            response_message = response.choices[0].message
+            final_text = final_response.choices[0].message.content
             
-            # Step 2: Handle Tool Usage (If properly formatted by Groq)
-            if response_message.tool_calls:
-                messages.append(response_message)
-                
-                for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    if function_name == "search_web":
-                        search_query = function_args.get("query")
-                        tool_results = search_web(search_query)
-                    elif function_name == "read_webpage":
-                        url_to_read = function_args.get("url")
-                        tool_results = read_webpage(url_to_read)
-                    else:
-                        tool_results = "Error: Unknown function."
-                        
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": tool_results,
-                    })
-                
-                # Get final answer after standard tool usage
-                final_response = groq_client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages
-                )
-                final_text = final_response.choices[0].message.content
-            else:
-                final_text = response_message.content
+            if final_text:
+                for i in range(0, len(final_text), 2000):
+                    await message.reply(final_text[i:i+2000], mention_author=False)
 
-        # Step 3: THE FIX - Catch Groq API 400 Crashes and process the tool manually
-                # Step 3: THE FIX - Catch Groq API 400 Crashes and process the tool manually
         except Exception as e:
-            error_str = str(e)
-            
-            # If the error contains the malformed tool call, intercept it
-            if "tool_use_failed" in error_str and "<function=" in error_str:
-                
-                # NEW REGEX: Grabs the function name AND the JSON exactly from inside the tag
-                match = re.search(r'<function=([a-zA-Z0-9_]+)\s*(\{.*?\})', error_str)
-                
-                if match:
-                    function_name = match.group(1)
-                    json_str = match.group(2)
-                    
-                    # Clean up escaped quotes if the error string added them
-                    json_str = json_str.replace('\\"', '"').replace("\\'", "'")
-                    
-                    try:
-                        function_args = json.loads(json_str)
-                        
-                        # Run the tool manually
-                        if function_name == "search_web":
-                            tool_results = search_web(function_args.get("query"))
-                        elif function_name == "read_webpage":
-                            tool_results = read_webpage(function_args.get("url"))
-                        else:
-                            tool_results = "Error: Unknown function."
-                            
-                        # Feed the result back to the model as a system correction
-                        messages.append({
-                            "role": "system",
-                            "content": f"Your previous tool call failed syntax validation, but was executed automatically. Here are the results for {function_name}:\n\n{tool_results}"
-                        })
-                        
-                        # Ask for the final answer again
-                        recovery_response = groq_client.chat.completions.create(
-                            model=MODEL_NAME,
-                            messages=messages
-                        )
-                        final_text = recovery_response.choices[0].message.content
-                        
-                    except json.JSONDecodeError as err:
-                        final_text = f"I encountered a JSON formatting error while trying to search: {json_str}"
-                else:
-                    final_text = "I tried to use a tool, but the formatting was completely rejected by the API."
-            else:
-                # If it's a completely different error (e.g. offline API), send it to Discord
-                await message.channel.send(f"An error occurred: {e}")
-                return
-
-        # Send the final response to Discord
-        if final_text:
-            for i in range(0, len(final_text), 2000):
-                await message.reply(final_text[i:i+2000], mention_author=False)
+            await message.channel.send(f"An error occurred: {e}")
 
 client.run(DISCORD_TOKEN)
