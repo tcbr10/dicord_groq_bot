@@ -81,7 +81,17 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            messages = [{"role": "user", "content": prompt}]
+            messages = [
+                {
+                    "role": "system", 
+                    "content": "You are a helpful Discord bot. If you need to use a tool, use it directly. Do not explain that you are using a tool, and do not use XML or HTML tags like <function>."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ]
+
             
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
