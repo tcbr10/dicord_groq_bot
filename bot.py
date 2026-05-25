@@ -183,19 +183,25 @@ async def on_message(message):
                 final_text = response_message.content
 
         # Step 3: THE FIX - Catch Groq API 400 Crashes and process the tool manually
+                # Step 3: THE FIX - Catch Groq API 400 Crashes and process the tool manually
         except Exception as e:
             error_str = str(e)
             
             # If the error contains the malformed tool call, intercept it
             if "tool_use_failed" in error_str and "<function=" in error_str:
-                # Extract the function name and JSON from the raw error message
-                func_match = re.search(r'<function=([a-zA-Z0-9_]+)', error_str)
-                args_match = re.search(r'({.*?})', error_str)
                 
-                if func_match and args_match:
-                    function_name = func_match.group(1)
+                # NEW REGEX: Grabs the function name AND the JSON exactly from inside the tag
+                match = re.search(r'<function=([a-zA-Z0-9_]+)\s*(\{.*?\})', error_str)
+                
+                if match:
+                    function_name = match.group(1)
+                    json_str = match.group(2)
+                    
+                    # Clean up escaped quotes if the error string added them
+                    json_str = json_str.replace('\\"', '"').replace("\\'", "'")
+                    
                     try:
-                        function_args = json.loads(args_match.group(1))
+                        function_args = json.loads(json_str)
                         
                         # Run the tool manually
                         if function_name == "search_web":
@@ -218,8 +224,8 @@ async def on_message(message):
                         )
                         final_text = recovery_response.choices[0].message.content
                         
-                    except json.JSONDecodeError:
-                        final_text = "I encountered a JSON formatting error while trying to search."
+                    except json.JSONDecodeError as err:
+                        final_text = f"I encountered a JSON formatting error while trying to search: {json_str}"
                 else:
                     final_text = "I tried to use a tool, but the formatting was completely rejected by the API."
             else:
