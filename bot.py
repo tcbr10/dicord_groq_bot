@@ -4,6 +4,7 @@ import os
 import json
 import urllib.request
 import urllib.parse
+import re
 
 # --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -72,7 +73,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or message.author.id != YOUR_USER_ID:
         return
 
     prompt = message.content.strip()
@@ -81,55 +82,84 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
+            # We add a strong system prompt to guide the output
             messages = [
                 {
                     "role": "system", 
-                    "content": "You are a helpful assistant. Use the tools provided when necessary. NEVER use XML or HTML tags like <function> or <tool_call> in your responses."
+                    "content": "You are a helpful assistant. If you need to search the web, output exactly: <function=search_web>{\"query\": \"your search query\"}</function>"
                 },
                 {
                     "role": "user", 
                     "content": prompt
                 }
             ]
-
             
+            # Note: We must pass 'tools' so the model knows it exists, 
+            # even though we are going to manually parse its text output.
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
-                parallel_tool_calls=False # <-- THIS IS THE CRITICAL FIX
             )
-
             
-            response_message = response.choices[0].message
+            response_text = response.choices[0].message.content or ""
             
-            if response_message.tool_calls:
-                messages.append(response_message)
-                for tool_call in response_message.tool_calls:
+            # Step 1: Check if the model output the <function=...> tag natively
+            if "function=search_web" in response_text:
+                # Extract the JSON part between the tags
+                match = re.search(r'<function=search_web\s*({.*?})\s*(?:</function>)?', response_text)
+                if match:
+                    json_str = match.group(1)
+                    try:
+                        function_args = json.loads(json_str)
+                        search_query = function_args.get("query")
+                        
+                        # Execute the SearXNG search
+                        search_results = search_web(search_query)
+                        
+                        # Step 2: Feed the results back to the model
+                        messages.append({
+                            "role": "assistant",
+                            "content": response_text # Pass back exactly what it wrote
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": f"Search Results for '{search_query}':\n{search_results}\n\nBased on these results, please answer my original question."
+                        })
+                        
+                        # Get the final answer
+                        final_response = groq_client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=messages
+                        )
+                        response_text = final_response.choices[0].message.content
+                    except json.JSONDecodeError:
+                        response_text = "Sorry, I encountered an error parsing the search query."
+            
+            # If it used the standard tool_calls array instead (just in case Groq fixes it)
+            elif response.choices[0].message.tool_calls:
+                messages.append(response.choices[0].message)
+                for tool_call in response.choices[0].message.tool_calls:
                     if tool_call.function.name == "search_web":
                         function_args = json.loads(tool_call.function.arguments)
                         search_query = function_args.get("query")
-                        
                         search_results = search_web(search_query)
-                        
                         messages.append({
                             "tool_call_id": tool_call.id,
                             "role": "tool",
                             "name": "search_web",
                             "content": search_results,
                         })
-                
                 final_response = groq_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages
                 )
-                final_text = final_response.choices[0].message.content
-            else:
-                final_text = response_message.content
-            
-            for i in range(0, len(final_text), 2000):
-                await message.reply(final_text[i:i+2000], mention_author=False)
+                response_text = final_response.choices[0].message.content
+
+            # Step 3: Send the final response to Discord
+            for i in range(0, len(response_text), 2000):
+                await message.reply(response_text[i:i+2000], mention_author=False)
 
         except Exception as e:
             await message.channel.send(f"An error occurred: {e}")
