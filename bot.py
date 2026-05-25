@@ -12,7 +12,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YOUR_USER_ID = 123456789012345678
 MODEL_NAME = "llama-3.3-70b-versatile"
 # Change this IP to your server's local IP address if not running on the exact same network bridge
-SEARXNG_URL = "http://127.0.0.1:8888" 
+SEARXNG_URL = "http://100.113.140.50:8888" 
 # ---------------------
 
 groq_client = Groq(api_key=GROQ_API_KEY)
