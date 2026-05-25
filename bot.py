@@ -6,6 +6,7 @@ import urllib.request
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
+import re
 
 # --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -146,10 +147,9 @@ async def on_message(message):
                 parallel_tool_calls=False
             )
             
-            # This is the variable that was missing/throwing the error!
             response_message = response.choices[0].message
             
-            # Step 2: Handle Tool Usage
+            # Step 2: Handle Tool Usage (If properly formatted by Groq)
             if response_message.tool_calls:
                 messages.append(response_message)
                 
@@ -173,22 +173,63 @@ async def on_message(message):
                         "content": tool_results,
                     })
                 
-                # Step 3: Get final answer after tool usage
+                # Get final answer after standard tool usage
                 final_response = groq_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages
                 )
                 final_text = final_response.choices[0].message.content
             else:
-                # If no tool was used, just reply normally
                 final_text = response_message.content
-            
-            # Send to Discord (chunking if it exceeds Discord's 2000 character limit)
-            if final_text:
-                for i in range(0, len(final_text), 2000):
-                    await message.reply(final_text[i:i+2000], mention_author=False)
 
+        # Step 3: THE FIX - Catch Groq API 400 Crashes and process the tool manually
         except Exception as e:
-            await message.channel.send(f"An error occurred: {e}")
+            error_str = str(e)
+            
+            # If the error contains the malformed tool call, intercept it
+            if "tool_use_failed" in error_str and "<function=" in error_str:
+                # Extract the function name and JSON from the raw error message
+                func_match = re.search(r'<function=([a-zA-Z0-9_]+)', error_str)
+                args_match = re.search(r'({.*?})', error_str)
+                
+                if func_match and args_match:
+                    function_name = func_match.group(1)
+                    try:
+                        function_args = json.loads(args_match.group(1))
+                        
+                        # Run the tool manually
+                        if function_name == "search_web":
+                            tool_results = search_web(function_args.get("query"))
+                        elif function_name == "read_webpage":
+                            tool_results = read_webpage(function_args.get("url"))
+                        else:
+                            tool_results = "Error: Unknown function."
+                            
+                        # Feed the result back to the model as a system correction
+                        messages.append({
+                            "role": "system",
+                            "content": f"Your previous tool call failed syntax validation, but was executed automatically. Here are the results for {function_name}:\n\n{tool_results}"
+                        })
+                        
+                        # Ask for the final answer again
+                        recovery_response = groq_client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=messages
+                        )
+                        final_text = recovery_response.choices[0].message.content
+                        
+                    except json.JSONDecodeError:
+                        final_text = "I encountered a JSON formatting error while trying to search."
+                else:
+                    final_text = "I tried to use a tool, but the formatting was completely rejected by the API."
+            else:
+                # If it's a completely different error (e.g. offline API), send it to Discord
+                await message.channel.send(f"An error occurred: {e}")
+                return
+
+        # Send the final response to Discord
+        if final_text:
+            for i in range(0, len(final_text), 2000):
+                await message.reply(final_text[i:i+2000], mention_author=False)
 
 client.run(DISCORD_TOKEN)
