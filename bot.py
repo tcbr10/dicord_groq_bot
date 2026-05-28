@@ -1,25 +1,36 @@
 import discord
 from groq import Groq
+from openai import OpenAI # Add this import
 import os
 import json
 import urllib.request
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
-from collections import deque # Added for chat history
+from collections import deque
 
-# --- CONFIGURATION ---
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Add your Gemini Key
+SEARXNG_URL = "http://100.113.140.50:8888" # Replace with your IP
+# --- CONFIGURATION ---
 YOUR_USER_ID = 123456789012345678  # Replace with your ID
 MODEL_NAME = "llama-3.3-70b-versatile"
-SEARXNG_URL = "http://100.113.140.50:8888" # Replace with your IP
 
-# Initialize Chat History (remembers the last 20 messages)
+# Initialize Chat History
 chat_history = deque(maxlen=20)
 # ---------------------
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Initialize Clients
+groq_client = Groq(api_key=GROQ_API_KEY) # We keep Groq for the Router
+
+# Initialize Gemini Client using the OpenAI SDK compatibility layer
+gemini_client = OpenAI(
+    api_key=GEMINI_API_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+)
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -136,9 +147,9 @@ async def on_message(message):
             messages.extend(list(chat_history))
             messages.append({"role": "user", "content": prompt})
             
-            # 5. Generate the final answer
-            final_response = groq_client.chat.completions.create(
-                model=MODEL_NAME,
+            # 5. Generate the final answer using GEMINI
+            final_response = gemini_client.chat.completions.create(
+                model="gemini-2.5-flash", # Change the model name
                 messages=messages,
                 temperature=0.7
             )
